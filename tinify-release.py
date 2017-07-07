@@ -6,66 +6,61 @@ import tempfile
 import tarfile
 
 
-DIR = os.path.abspath(os.path.join(os.path.dirname(__file__)))
-
-
 class TinifyRelease:
     def __init__(self, release_path):
         self.release_path = release_path
+
         if not tarfile.is_tarfile(release_path):
             raise Exception('not a tarfile: {}'.format(release_path))
+
+        if not self.is_compiled_release:
+            raise Exception('not a compiled release: {}'.format(release_path))
 
     def is_compiled_release(self):
         with tarfile.open(self.release_path) as release_tar:
             members = [m.path for m in release_tar.getmembers()]
             return './compiled_packages' in members
 
+    @property
+    def all_package_names(self):
+        with tarfile.open(self.release_path) as tar:
+            release_mf = tar.extractfile('./release.MF')
+            packages = list(yaml.load_all(release_mf))[0]['compiled_packages']
+            return set(package['name'] for package in packages)
 
-def get_all_package_names(path):
-    with tarfile.open(path) as tar:
-        release_mf = tar.extractfile('./release.MF')
-        packages = list(yaml.load_all(release_mf))[0]['compiled_packages']
-        return set(package['name'] for package in packages)
+    @property
+    def job_package_names(self):
+        with tarfile.open(self.release_path) as tar:
+            job_package_names = []
+            job_tars = [member.path for member in tar.getmembers() if member.path.startswith('./jobs/')]
+            for job_tar in job_tars:
+                with tarfile.open(fileobj=tar.extractfile(job_tar)) as job:
+                    job_package_names += list(yaml.load_all(job.extractfile('./job.MF')))[0]['packages']
+            return set(job_package_names)
 
+    @property
+    def redundant_packages(self):
+        return self.all_package_names - self.job_package_names
 
-def get_job_package_names(path):
-    with tarfile.open(path) as tar:
-        job_package_names = []
-        job_tars = [member.path for member in tar.getmembers() if member.path.startswith('./jobs/')]
-        for job_tar in job_tars:
-            with tarfile.open(fileobj=tar.extractfile(job_tar)) as job:
-                job_package_names += list(yaml.load_all(job.extractfile('./job.MF')))[0]['packages']
-        return set(job_package_names)
+    def tinify(self, tiny_release_path):
+        try:
+            temp_dir = tempfile.mkdtemp()
+            self._tinify(tiny_release_path, temp_dir)
+        finally:
+            if os.path.isdir(temp_dir):
+                shutil.rmtree(temp_dir)
 
-
-def filter_redundant_packages(compiled_packages, redundant_packages):
-    new_compiled_packages = []
-    for compiled_package in compiled_packages:
-        if compiled_package['name'] in redundant_packages:
-            continue
-        new_compiled_packages.append(compiled_package)
-    return new_compiled_packages
-
-
-def filter_redundant_dependencies(compiled_packages, redundant_packages):
-    for compiled_package in compiled_packages:
-        compiled_package['dependencies'] = [dependency for dependency in compiled_package['dependencies'] if dependency not in redundant_packages]
-    return compiled_packages
-
-
-def tinify_release(release_path, tiny_release_path, redundant_packages):
-    try:
-        temp_dir = tempfile.mkdtemp()
-        with tarfile.open(release_path) as release_tar:
+    def _tinify(self, tiny_release_path, temp_dir):
+        with tarfile.open(self.release_path) as release_tar:
             release_tar.extractall(path=temp_dir)
 
-        for package in redundant_packages:
+        for package in self.redundant_packages:
             os.remove(os.path.join(temp_dir, 'compiled_packages', package + '.tgz'))
 
         with open(os.path.join(temp_dir, 'release.MF')) as release_mf_file:
             release_mf = list(yaml.load_all(release_mf_file))[0]
-            release_mf['compiled_packages'] = filter_redundant_packages(release_mf['compiled_packages'], redundant_packages)
-            release_mf['compiled_packages'] = filter_redundant_dependencies(release_mf['compiled_packages'], redundant_packages)
+            release_mf['compiled_packages'] = self.filter_redundant_packages(release_mf['compiled_packages'])
+            release_mf['compiled_packages'] = self.filter_redundant_dependencies(release_mf['compiled_packages'])
 
         os.remove(os.path.join(temp_dir, 'release.MF'))
 
@@ -75,34 +70,38 @@ def tinify_release(release_path, tiny_release_path, redundant_packages):
         with tarfile.open(tiny_release_path, mode='w:gz') as tiny_release:
             for thing in os.listdir(temp_dir):
                 tiny_release.add(os.path.join(temp_dir, thing), arcname=thing)
-    finally:
-        if os.path.isdir(temp_dir):
-            shutil.rmtree(temp_dir)
+
+
+    def filter_redundant_packages(self, compiled_packages):
+        new_compiled_packages = []
+        for compiled_package in compiled_packages:
+            if compiled_package['name'] in self.redundant_packages:
+                continue
+            new_compiled_packages.append(compiled_package)
+        return new_compiled_packages
+
+
+    def filter_redundant_dependencies(self, compiled_packages):
+        for compiled_package in compiled_packages:
+            compiled_package['dependencies'] = [dependency for dependency in compiled_package['dependencies'] if dependency not in self.redundant_packages]
+        return compiled_packages
 
 
 def main():
     release_path = sys.argv[1]
     tiny_release_path = sys.argv[2]
 
-    tinify_release_temp = TinifyRelease(sys.argv[1])
+    tinify_release = TinifyRelease(sys.argv[1])
 
-    print('input file size {} MB: '.format(os.path.getsize(release_path) >> 20))
+    initial_size = os.path.getsize(release_path)
+    print('input file size {} MB: '.format(initial_size >> 20))
 
-    if not tinify_release_temp.is_compiled_release():
-        print('not a compiled release')
-        sys.exit(0)
+    tinify_release.tinify(tiny_release_path)
 
-    all_package_names = get_all_package_names(release_path)
+    final_size = os.path.getsize(tiny_release_path)
+    print('output file size: {} MB'.format(final_size >> 20))
+    print('{0:.2f}% reduction!'.format(100 - 100 * float(final_size) / initial_size))
 
-    job_package_names = get_job_package_names(release_path)
-
-    redundant_packages = all_package_names - job_package_names
-
-    tinify_release(release_path, tiny_release_path, redundant_packages)
-
-    print('output file size: {} MB'.format(os.path.getsize(tiny_release_path) >> 20))
-
-    print('{0:.2f}% reduction!'.format(100 - 100 * float(os.path.getsize(tiny_release_path) / os.path.getsize(release_path))))
 
 if __name__ == '__main__':
     main()
