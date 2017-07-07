@@ -13,11 +13,12 @@ class TinifyRelease:
         if not tarfile.is_tarfile(release_path):
             raise Exception('not a tarfile: {}'.format(release_path))
 
-        if not self.is_compiled_release:
+        if not self.is_compiled_release(release_path):
             raise Exception('not a compiled release: {}'.format(release_path))
 
-    def is_compiled_release(self):
-        with tarfile.open(self.release_path) as release_tar:
+    @staticmethod
+    def is_compiled_release(release_path):
+        with tarfile.open(release_path) as release_tar:
             members = [m.path for m in release_tar.getmembers()]
             return './compiled_packages' in members
 
@@ -35,7 +36,10 @@ class TinifyRelease:
             job_tars = [member.path for member in tar.getmembers() if member.path.startswith('./jobs/')]
             for job_tar in job_tars:
                 with tarfile.open(fileobj=tar.extractfile(job_tar)) as job:
-                    job_package_names += list(yaml.load_all(job.extractfile('./job.MF')))[0]['packages']
+                    try:
+                        job_package_names += list(yaml.load_all(job.extractfile('./job.MF')))[0]['packages']
+                    except KeyError:
+                        job_package_names += []
             return set(job_package_names)
 
     @property
@@ -71,7 +75,6 @@ class TinifyRelease:
             for thing in os.listdir(temp_dir):
                 tiny_release.add(os.path.join(temp_dir, thing), arcname=thing)
 
-
     def filter_redundant_packages(self, compiled_packages):
         new_compiled_packages = []
         for compiled_package in compiled_packages:
@@ -79,7 +82,6 @@ class TinifyRelease:
                 continue
             new_compiled_packages.append(compiled_package)
         return new_compiled_packages
-
 
     def filter_redundant_dependencies(self, compiled_packages):
         for compiled_package in compiled_packages:
