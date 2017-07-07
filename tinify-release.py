@@ -91,7 +91,7 @@ def main():
     release_path = sys.argv[1]
     tiny_release_path = sys.argv[2]
 
-    tinify_release = TinifyRelease(sys.argv[1])
+    tinify_release = TinifyRelease(release_path)
 
     initial_size = os.path.getsize(release_path)
     print('input file size {} MB: '.format(initial_size >> 20))
