@@ -56,7 +56,26 @@ class TinifyRelease:
 
     def _tinify(self, tiny_release_path, temp_dir):
         with tarfile.open(self.release_path) as release_tar:
-            release_tar.extractall(path=temp_dir)
+            def is_within_directory(directory, target):
+                
+                abs_directory = os.path.abspath(directory)
+                abs_target = os.path.abspath(target)
+            
+                prefix = os.path.commonprefix([abs_directory, abs_target])
+                
+                return prefix == abs_directory
+            
+            def safe_extract(tar, path=".", members=None, *, numeric_owner=False):
+            
+                for member in tar.getmembers():
+                    member_path = os.path.join(path, member.name)
+                    if not is_within_directory(path, member_path):
+                        raise Exception("Attempted Path Traversal in Tar File")
+            
+                tar.extractall(path, members, numeric_owner=numeric_owner) 
+                
+            
+            safe_extract(release_tar, path=temp_dir)
 
         for package in self.redundant_packages:
             os.remove(os.path.join(temp_dir, 'compiled_packages', package + '.tgz'))
